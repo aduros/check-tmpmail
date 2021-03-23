@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+
+"use strict";
+
+const { program } = require("commander");
+
+const api = require("../lib/api");
+
+function parseHtml (htmlText) {
+    return new Promise((resolve, reject) => {
+        const { Parser } = require("htmlparser2");
+        const { DomHandler } = require("domhandler");
+
+        const handler = new DomHandler((error, dom) => {
+            if (error) {
+                reject(error);
+            } else {
+                resolve(dom);
+            }
+        });
+
+        const parser = new Parser(handler);
+        parser.write(htmlText);
+        parser.end();
+    });
+}
+
+function getLinks (dom, result = []) {
+    for (const elem of dom) {
+        if (elem.name == "a" && elem.attribs && elem.attribs.href) {
+            result.push(elem.attribs.href);
+        }
+        if (elem.children) {
+            getLinks(elem.children, result);
+        }
+    }
+    return result;
+}
+
+function sleep (seconds) {
+    return new Promise(resolve => {
+        setTimeout(resolve, seconds*1000);
+    });
+}
+
+program
+    .arguments("<email>", "the email address")
+    .action(async email => {
+        console.error("Watching "+email+" ...");
+
+        const [ login, domain ] = email.split("@");
+        const seen = new Set();
+
+        while (true) {
+            const messages = await api.getMessages(login, domain);
+            for (const message of messages) {
+                if (!seen.has(message.id)) {
+                    seen.add(message.id);
+                    console.error("Subject: "+message.subject);
+
+                    const content = await api.readMessage(login, domain, message.id);
+                    const dom = await parseHtml(content.htmlBody);
+                    const links = getLinks(dom);
+
+                    if (links.length > 0) {
+                        if (links.length == 1) {
+                            // Only one link in the body, print it
+                            console.log(links[0]);
+
+                        } else {
+                            // Multiple links, print the webmail UI so the user can figure it out
+                            const params = {
+                                action: "readMessage",
+                                id: message.id,
+                                login, domain,
+                            };
+                            console.log("https://www.1secmail.com/mailbox/?" + new URLSearchParams(params).toString());
+                        }
+
+                        return; // All done
+                    }
+                }
+            }
+
+            await sleep(5);
+        }
+    })
+    .parse();
